@@ -26,7 +26,7 @@ elif command -v conda &>/dev/null; then
     conda activate llm-politics 2>/dev/null || conda run -n llm-politics pip install -q -r requirements.txt
 else
     echo "[run.sh] no conda found, installing with pip"
-    pip install -q -r requirements.txt
+    pip install -q --force-reinstall -r requirements.txt
 fi
 
 # ── Run evaluation ──────────────────────────────────────────────────────────
