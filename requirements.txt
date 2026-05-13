@@ -1,7 +1,2 @@
-torch
-transformers
-tokenizers
-accelerate
-huggingface_hub
+git+https://github.com/talkie-lm/talkie.git
 matplotlib
-sentencepiece
