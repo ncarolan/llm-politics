@@ -3,3 +3,4 @@ transformers
 accelerate
 huggingface_hub
 matplotlib
+sentencepiece
