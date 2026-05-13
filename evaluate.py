@@ -88,7 +88,7 @@ def compute_coordinates(responses: list[dict]) -> dict:
 
 def load_model(model_id: str, device: str):
     print(f"Loading tokenizer: {model_id}")
-    tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False, trust_remote_code=True)
 
     dtype = torch.bfloat16 if device != "cpu" else torch.float32
     print(f"Loading model on {device} with dtype={dtype} ...")
@@ -96,6 +96,7 @@ def load_model(model_id: str, device: str):
         model_id,
         torch_dtype=dtype,
         device_map=device if device != "cpu" else None,
+        trust_remote_code=True,
     )
     model.eval()
     return tokenizer, model
