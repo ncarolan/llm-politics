@@ -70,12 +70,12 @@ def compute_coordinates(responses: list[dict]) -> dict:
     }
 
 
-def run_single(model: Talkie, run_idx: int, n_runs: int) -> dict:
+def run_single(model: Talkie, run_idx: int, n_runs: int, max_tokens: int) -> dict:
     responses = []
     n = len(QUESTIONS)
     for i, q in enumerate(QUESTIONS, 1):
         prompt = build_prompt(q["text"])
-        result = model.generate(prompt, max_tokens=20)
+        result = model.generate(prompt, max_tokens=max_tokens)
         raw_output = result.text
         parsed = parse_response(raw_output)
 
@@ -116,14 +116,14 @@ def average_coordinates(runs: list[dict]) -> dict:
     }
 
 
-def run_evaluation(model_name: str, n_runs: int) -> dict:
+def run_evaluation(model_name: str, n_runs: int, max_tokens: int) -> dict:
     print(f"Loading model: {model_name}")
     model = Talkie(model_name)
 
     runs = []
     for i in range(1, n_runs + 1):
         print(f"\nRun {i}/{n_runs}")
-        runs.append(run_single(model, i, n_runs))
+        runs.append(run_single(model, i, n_runs, max_tokens))
         coords = runs[-1]["coordinates"]
         print(f"  -> econ={coords['economic']:+.3f}, social={coords['social']:+.3f}")
 
@@ -169,13 +169,19 @@ def main():
         help="Number of evaluation runs to average (default: 100)",
     )
     parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=10,
+        help="Max tokens to generate per question (default: 10)",
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help="Path to write JSON results (optional)",
     )
     args = parser.parse_args()
 
-    result = run_evaluation(args.model, args.runs)
+    result = run_evaluation(args.model, args.runs, args.max_tokens)
     print_summary(result)
 
     if args.output:
