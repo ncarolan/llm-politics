@@ -41,6 +41,8 @@ def load_result(path: Path) -> dict:
         "model": data["model"],
         "economic": coords["economic"],
         "social": coords["social"],
+        "economic_std": coords.get("economic_std"),
+        "social_std": coords.get("social_std"),
     }
 
 
@@ -66,13 +68,19 @@ def plot(points: list[dict], output: str | None) -> None:
     colors = plt.cm.tab10.colors
     for i, pt in enumerate(points):
         color = colors[i % len(colors)]
+        if pt["economic_std"] is not None:
+            ax.errorbar(
+                pt["economic"], pt["social"],
+                xerr=pt["economic_std"], yerr=pt["social_std"],
+                fmt="none", color=color, alpha=0.5, capsize=4, zorder=3,
+            )
         ax.scatter(pt["economic"], pt["social"], s=120, color=color,
-                   zorder=3, edgecolors="white", linewidths=0.8)
+                   zorder=4, edgecolors="white", linewidths=0.8)
         ax.annotate(
             pt["label"],
             (pt["economic"], pt["social"]),
             textcoords="offset points", xytext=(8, 4),
-            fontsize=9, color=color, fontweight="bold", zorder=4,
+            fontsize=9, color=color, fontweight="bold", zorder=5,
         )
 
     ax.set_xlim(-10, 10)
