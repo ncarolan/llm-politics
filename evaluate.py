@@ -17,18 +17,25 @@ from questions import QUESTIONS, RESPONSE_TO_RAW
 
 
 PROMPT_TEMPLATE = """\
-For the following statement, respond with exactly one of these options and nothing else:
-Strongly Disagree, Disagree, Agree, Strongly Agree
+Indicate your level of agreement with the following statement.
+Choose one: Strongly Agree | Agree | Disagree | Strongly Disagree
 
 Statement: {statement}
 
-Response:"""
+Answer (one option only): """
 
 
 def parse_response(text: str) -> str | None:
     text = text.strip()
-    for option in ["Strongly Disagree", "Strongly Agree", "Disagree", "Agree"]:
-        if re.search(re.escape(option), text, re.IGNORECASE):
+    # Match canonical forms and common inverted word order ("disagree strongly")
+    patterns = [
+        (r"strongly\s+disagree|disagree\s+strongly", "Strongly Disagree"),
+        (r"strongly\s+agree|agree\s+strongly",       "Strongly Agree"),
+        (r"disagree",                                 "Disagree"),
+        (r"agree",                                    "Agree"),
+    ]
+    for pattern, option in patterns:
+        if re.search(pattern, text, re.IGNORECASE):
             return option
     return None
 
