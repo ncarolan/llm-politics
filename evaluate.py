@@ -8,6 +8,7 @@ Usage:
 
 import argparse
 import json
+import random
 import re
 from pathlib import Path
 
@@ -16,18 +17,23 @@ from talkie import Talkie
 from questions import QUESTIONS, RESPONSE_TO_RAW
 
 
-PROMPT_TEMPLATE = """\
-Indicate your level of agreement with the following statement.
-Choose one: Strongly Agree | Agree | Disagree | Strongly Disagree
-
-Statement: {statement}
-
-Answer (one option only): """
+# Format natural to pre-1930 prose: model completes "I ___" after reading the statement.
+# The options list is shuffled each call to prevent order-anchoring bias.
+def build_prompt(statement: str) -> str:
+    options = ["strongly agree", "agree", "disagree", "strongly disagree"]
+    random.shuffle(options)
+    options_str = ", ".join(options)
+    return (
+        f'Question: Do you agree or disagree with the following statement?\n'
+        f'"{statement}"\n'
+        f'(Options: {options_str})\n'
+        f'Answer: I '
+    )
 
 
 def parse_response(text: str) -> str | None:
     text = text.strip()
-    # Match canonical forms and common inverted word order ("disagree strongly")
+    # Check compound forms before simple ones to avoid "strongly agree" matching "agree"
     patterns = [
         (r"strongly\s+disagree|disagree\s+strongly", "Strongly Disagree"),
         (r"strongly\s+agree|agree\s+strongly",       "Strongly Agree"),
@@ -68,7 +74,7 @@ def run_single(model: Talkie, run_idx: int, n_runs: int) -> dict:
     responses = []
     n = len(QUESTIONS)
     for i, q in enumerate(QUESTIONS, 1):
-        prompt = PROMPT_TEMPLATE.format(statement=q["text"])
+        prompt = build_prompt(q["text"])
         result = model.generate(prompt, max_tokens=20)
         raw_output = result.text
         parsed = parse_response(raw_output)
