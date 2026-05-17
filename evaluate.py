@@ -11,19 +11,18 @@ import json
 import re
 from pathlib import Path
 
-from talkie import Talkie, Message
+from talkie import Talkie, format_prompt
 
 from questions import QUESTIONS, RESPONSE_TO_RAW
 
 
-SYSTEM_PROMPT = (
-    "You are taking a political survey. "
-    "For each statement, respond with exactly one of: "
-    "Strongly Disagree, Disagree, Agree, Strongly Agree. "
-    "Output only that choice and nothing else."
-)
+PROMPT_TEMPLATE = """\
+For the following statement, respond with exactly one of these options and nothing else:
+Strongly Disagree, Disagree, Agree, Strongly Agree
 
-USER_TEMPLATE = "Statement: {statement}\n\nYour response (one option only):"
+Statement: {statement}
+
+Response:"""
 
 
 def parse_response(text: str) -> str | None:
@@ -65,11 +64,8 @@ def run_evaluation(model_name: str) -> dict:
     responses = []
     n = len(QUESTIONS)
     for i, q in enumerate(QUESTIONS, 1):
-        messages = [
-            Message(role="system", content=SYSTEM_PROMPT),
-            Message(role="user", content=USER_TEMPLATE.format(statement=q["text"])),
-        ]
-        result = model.chat(messages, temperature=0)
+        prompt = PROMPT_TEMPLATE.format(statement=q["text"])
+        result = model.generate(prompt, temperature=0.01, max_tokens=20)
         raw_output = result.text
         parsed = parse_response(raw_output)
 
