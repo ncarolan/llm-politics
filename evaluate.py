@@ -65,7 +65,7 @@ def run_evaluation(model_name: str) -> dict:
     n = len(QUESTIONS)
     for i, q in enumerate(QUESTIONS, 1):
         prompt = PROMPT_TEMPLATE.format(statement=q["text"])
-        result = model.generate(prompt, temperature=0.01, max_tokens=20)
+        result = model.generate(prompt, max_tokens=20)
         raw_output = result.text
         parsed = parse_response(raw_output)
 
