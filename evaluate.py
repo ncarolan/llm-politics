@@ -3,47 +3,18 @@ Political Compass Test evaluation for Talkie models.
 
 Usage:
     conda run -n llm-politics python evaluate.py
-    conda run -n llm-politics python evaluate.py --model talkie-1930-13b-base --runs 10 --output results.json
+    conda run -n llm-politics python evaluate.py --model talkie-1930-13b-base --output results.json
+    conda run -n llm-politics python evaluate.py --runs 5 --output results.json  # multiple runs for sampling mode
 """
 
 import argparse
 import json
-import random
-import re
 from pathlib import Path
 
 from talkie import Talkie
 
+from logprob import score_question
 from questions import QUESTIONS, RESPONSE_TO_RAW
-
-
-# Format natural to pre-1930 prose: model completes "I ___" after reading the statement.
-# The options list is shuffled each call to prevent order-anchoring bias.
-def build_prompt(statement: str) -> str:
-    options = ["strongly agree", "agree", "disagree", "strongly disagree"]
-    random.shuffle(options)
-    options_str = ", ".join(options)
-    return (
-        f'Question: Do you agree or disagree with the following statement?\n'
-        f'"{statement}"\n'
-        f'(Options: {options_str})\n'
-        f'Answer: I '
-    )
-
-
-def parse_response(text: str) -> str | None:
-    text = text.strip()
-    # Check compound forms before simple ones to avoid "strongly agree" matching "agree"
-    patterns = [
-        (r"strongly\s+disagree|disagree\s+strongly", "Strongly Disagree"),
-        (r"strongly\s+agree|agree\s+strongly",       "Strongly Agree"),
-        (r"disagree",                                 "Disagree"),
-        (r"agree",                                    "Agree"),
-    ]
-    for pattern, option in patterns:
-        if re.search(pattern, text, re.IGNORECASE):
-            return option
-    return None
 
 
 def compute_coordinates(responses: list[dict]) -> dict:
@@ -51,7 +22,7 @@ def compute_coordinates(responses: list[dict]) -> dict:
 
     for r in responses:
         q = r["question"]
-        raw = RESPONSE_TO_RAW.get(r["parsed_response"])
+        raw = RESPONSE_TO_RAW.get(r["answer"])
         if raw is None:
             continue
         score = raw * q["sign"]
@@ -70,35 +41,27 @@ def compute_coordinates(responses: list[dict]) -> dict:
     }
 
 
-def run_single(model: Talkie, run_idx: int, n_runs: int, max_tokens: int) -> dict:
+def run_single(model: Talkie, run_idx: int, n_runs: int) -> dict:
     responses = []
     n = len(QUESTIONS)
+
     for i, q in enumerate(QUESTIONS, 1):
-        prompt = build_prompt(q["text"])
-        result = model.generate(prompt, max_tokens=max_tokens)
-        raw_output = result.text
-        parsed = parse_response(raw_output)
-
-        print(f"  [{i:2d}/{n}] Q{q['id']}: {raw_output.strip()!r} -> {parsed}")
-
-        responses.append({
-            "question": q,
-            "raw_output": raw_output.strip(),
-            "parsed_response": parsed,
-        })
+        result = score_question(model, q["text"])
+        print(f"  [{i:2d}/{n}] Q{q['id']}: {result['answer']}")
+        responses.append({"question": q, **result})
 
     return {
         "run": run_idx,
         "coordinates": compute_coordinates(responses),
-        "questions_answered": sum(1 for r in responses if r["parsed_response"] is not None),
+        "questions_answered": len(responses),
         "responses": [
             {
                 "id": r["question"]["id"],
                 "axis": r["question"]["axis"],
                 "sign": r["question"]["sign"],
                 "text": r["question"]["text"],
-                "raw_output": r["raw_output"],
-                "parsed_response": r["parsed_response"],
+                "answer": r["answer"],
+                "scores": r["scores"],
             }
             for r in responses
         ],
@@ -108,26 +71,29 @@ def run_single(model: Talkie, run_idx: int, n_runs: int, max_tokens: int) -> dic
 def average_coordinates(runs: list[dict]) -> dict:
     econ_vals = [r["coordinates"]["economic"] for r in runs]
     social_vals = [r["coordinates"]["social"] for r in runs]
+    n = len(runs)
+    econ_mean = sum(econ_vals) / n
+    social_mean = sum(social_vals) / n
     return {
-        "economic": round(sum(econ_vals) / len(econ_vals), 3),
-        "social": round(sum(social_vals) / len(social_vals), 3),
-        "economic_std": round((sum((v - sum(econ_vals)/len(econ_vals))**2 for v in econ_vals) / len(econ_vals))**0.5, 3),
-        "social_std": round((sum((v - sum(social_vals)/len(social_vals))**2 for v in social_vals) / len(social_vals))**0.5, 3),
+        "economic": round(econ_mean, 3),
+        "social": round(social_mean, 3),
+        "economic_std": round((sum((v - econ_mean) ** 2 for v in econ_vals) / n) ** 0.5, 3),
+        "social_std": round((sum((v - social_mean) ** 2 for v in social_vals) / n) ** 0.5, 3),
     }
 
 
-def run_evaluation(model_name: str, n_runs: int, max_tokens: int) -> dict:
+def run_evaluation(model_name: str, n_runs: int) -> dict:
     print(f"Loading model: {model_name}")
     model = Talkie(model_name)
 
     runs = []
     for i in range(1, n_runs + 1):
         print(f"\nRun {i}/{n_runs}")
-        runs.append(run_single(model, i, n_runs, max_tokens))
+        runs.append(run_single(model, i, n_runs))
         coords = runs[-1]["coordinates"]
         print(f"  -> econ={coords['economic']:+.3f}, social={coords['social']:+.3f}")
 
-    coords = average_coordinates(runs)
+    coords = average_coordinates(runs) if n_runs > 1 else runs[0]["coordinates"]
     return {
         "model": f"talkie-lm/{model_name}",
         "n_runs": n_runs,
@@ -148,9 +114,12 @@ def print_summary(result: dict) -> None:
     print("\n" + "=" * 60)
     print(f"Model:    {result['model']}")
     print(f"Runs:     {result['n_runs']}")
-    print(f"\nPolitical Compass Coordinates (averaged):")
-    print(f"  Economic axis:  {eq:+.3f} ± {coords['economic_std']:.3f}  (negative=left, positive=right)")
-    print(f"  Social axis:    {sq:+.3f} ± {coords['social_std']:.3f}  (negative=libertarian, positive=authoritarian)")
+    print(f"\nPolitical Compass Coordinates:")
+    print(f"  Economic axis:  {eq:+.3f}  (negative=left, positive=right)")
+    print(f"  Social axis:    {sq:+.3f}  (negative=libertarian, positive=authoritarian)")
+    if "economic_std" in coords:
+        print(f"  Std (econ):     ±{coords['economic_std']:.3f}")
+        print(f"  Std (social):   ±{coords['social_std']:.3f}")
     print(f"  Quadrant:       {quadrant}")
     print("=" * 60)
 
@@ -165,14 +134,8 @@ def main():
     parser.add_argument(
         "--runs",
         type=int,
-        default=100,
-        help="Number of evaluation runs to average (default: 100)",
-    )
-    parser.add_argument(
-        "--max-tokens",
-        type=int,
-        default=10,
-        help="Max tokens to generate per question (default: 10)",
+        default=1,
+        help="Number of evaluation runs (default: 1; log-prob scoring is deterministic)",
     )
     parser.add_argument(
         "--output",
@@ -181,7 +144,7 @@ def main():
     )
     args = parser.parse_args()
 
-    result = run_evaluation(args.model, args.runs, args.max_tokens)
+    result = run_evaluation(args.model, args.runs)
     print_summary(result)
 
     if args.output:
