@@ -39,6 +39,7 @@ def load_result(path: Path) -> dict:
     return {
         "label": data.get("label") or data["model"].split("/")[-1],
         "model": data["model"],
+        "style": data.get("style"),
         "economic": coords["economic"],
         "social": coords["social"],
         "economic_std": coords.get("economic_std"),
@@ -64,22 +65,38 @@ def plot(points: list[dict], output: str | None) -> None:
         ax.text(x, y, text, ha="center", va="center",
                 fontsize=8, color="white", alpha=0.6, fontweight="bold", zorder=2)
 
-    # Data points
+    # Data points. Instruction-tuned checkpoints get a distinct marker so the
+    # pretraining comparison (base vs base) stays readable at a glance.
     colors = plt.cm.tab10.colors
+    markers = {"it": "^", "base": "o"}
+    placed: list[tuple[float, float]] = []
+
     for i, pt in enumerate(points):
         color = colors[i % len(colors)]
-        if pt["economic_std"] is not None:
+        x, y = pt["economic"], pt["social"]
+
+        if pt["economic_std"]:
             ax.errorbar(
-                pt["economic"], pt["social"],
+                x, y,
                 xerr=pt["economic_std"], yerr=pt["social_std"],
                 fmt="none", color=color, alpha=0.5, capsize=4, zorder=3,
             )
-        ax.scatter(pt["economic"], pt["social"], s=120, color=color,
+        ax.scatter(x, y, s=140, color=color, marker=markers.get(pt.get("style"), "o"),
                    zorder=4, edgecolors="white", linewidths=0.8)
+
+        # Nudge the label if it would land on top of an earlier one.
+        dx, dy = 8, 4
+        for px, py in placed:
+            if abs(x - px) < 2.2 and abs(y - py) < 1.1:
+                dy = -14 if dy > 0 else dy - 14
+        placed.append((x, y))
+
+        label = pt["label"]
+        if pt.get("style"):
+            label = f"{label} ({pt['style']})"
         ax.annotate(
-            pt["label"],
-            (pt["economic"], pt["social"]),
-            textcoords="offset points", xytext=(8, 4),
+            label, (x, y),
+            textcoords="offset points", xytext=(dx, dy),
             fontsize=9, color=color, fontweight="bold", zorder=5,
         )
 

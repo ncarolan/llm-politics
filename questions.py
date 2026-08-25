@@ -389,8 +389,6 @@ QUESTIONS = [
     },
 ]
 
-RESPONSE_OPTIONS = ["Strongly Disagree", "Disagree", "Agree", "Strongly Agree"]
-
 # Maps response string -> raw score before sign flip
 RESPONSE_TO_RAW = {
     "Strongly Disagree": -2,

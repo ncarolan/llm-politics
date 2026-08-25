@@ -14,8 +14,9 @@ import re
 from pathlib import Path
 
 from talkie import Talkie
+from talkie.config import MODELS
 
-from logprob import score_question, OPTIONS
+from logprob import score_question, calibration_baseline, OPTIONS
 from questions import QUESTIONS, RESPONSE_TO_RAW
 
 
@@ -66,16 +67,23 @@ def compute_coordinates(responses: list[dict]) -> dict:
         score = raw * q["sign"]
         (econ_scores if q["axis"] == "econ" else social_scores).append(score)
 
-    def normalise(scores: list[float], n_questions: int) -> float:
-        max_possible = 2.0 * n_questions
+    def normalise(scores: list[float]) -> float:
+        """
+        Scale the summed scores to [-10, 10].
+
+        The denominator counts only the questions that were actually answered.
+        Normalising by the full question count instead would treat every
+        unparsed answer as a zero, pulling the result toward the origin in
+        proportion to the parse-failure rate.
+        """
+        max_possible = 2.0 * len(scores)
         return round(10.0 * sum(scores) / max_possible, 3) if max_possible else 0.0
 
-    econ_total = sum(1 for q in QUESTIONS if q["axis"] == "econ")
-    social_total = sum(1 for q in QUESTIONS if q["axis"] == "social")
-
     return {
-        "economic": normalise(econ_scores, econ_total),
-        "social": normalise(social_scores, social_total),
+        "economic": normalise(econ_scores),
+        "social": normalise(social_scores),
+        "econ_answered": len(econ_scores),
+        "social_answered": len(social_scores),
     }
 
 
@@ -85,24 +93,42 @@ def average_coordinates(runs: list[dict]) -> dict:
     n = len(runs)
     econ_mean = sum(econ_vals) / n
     social_mean = sum(social_vals) / n
+
+    def std(vals: list[float], mean: float) -> float:
+        # Population std over the runs we have; undefined for a single run.
+        return (sum((v - mean) ** 2 for v in vals) / n) ** 0.5 if n > 1 else 0.0
+
     return {
         "economic": round(econ_mean, 3),
         "social": round(social_mean, 3),
-        "economic_std": round((sum((v - econ_mean) ** 2 for v in econ_vals) / n) ** 0.5, 3),
-        "social_std": round((sum((v - social_mean) ** 2 for v in social_vals) / n) ** 0.5, 3),
+        "economic_std": round(std(econ_vals, econ_mean), 3),
+        "social_std": round(std(social_vals, social_mean), 3),
+        "econ_answered": sum(r["coordinates"]["econ_answered"] for r in runs) / n,
+        "social_answered": sum(r["coordinates"]["social_answered"] for r in runs) / n,
     }
 
 
 # ── Evaluation loop ───────────────────────────────────────────────────────────
 
-def run_single(model: Talkie, run_idx: int, n_runs: int, logprobs: bool, max_tokens: int) -> dict:
+def run_single(
+    model: Talkie,
+    run_idx: int,
+    logprobs: bool,
+    max_tokens: int,
+    baseline: list[float] | None = None,
+) -> dict:
     responses = []
     n = len(QUESTIONS)
 
     for i, q in enumerate(QUESTIONS, 1):
         if logprobs:
-            result = score_question(model, q["text"])
-            print(f"  [{i:2d}/{n}] Q{q['id']}: {result['answer']}")
+            result = score_question(model, q["text"], baseline=baseline)
+            shift = (
+                ""
+                if result.get("uncalibrated_answer") in (None, result["answer"])
+                else f"  (uncalibrated: {result['uncalibrated_answer']})"
+            )
+            print(f"  [{i:2d}/{n}] Q{q['id']}: {result['answer']}{shift}")
         else:
             result = query_generation(model, q["text"], max_tokens)
             print(f"  [{i:2d}/{n}] Q{q['id']}: {result['raw_output']!r} -> {result['answer']}")
@@ -120,29 +146,69 @@ def run_single(model: Talkie, run_idx: int, n_runs: int, logprobs: bool, max_tok
                 "sign": r["question"]["sign"],
                 "text": r["question"]["text"],
                 "answer": r["answer"],
-                **({"scores": r["scores"]} if logprobs else {"raw_output": r.get("raw_output")}),
+                **(
+                    {
+                        "scores": r["scores"],
+                        **({"calibrated_scores": r["calibrated_scores"]}
+                           if "calibrated_scores" in r else {}),
+                        **({"uncalibrated_answer": r["uncalibrated_answer"]}
+                           if "uncalibrated_answer" in r else {}),
+                    }
+                    if logprobs
+                    else {"raw_output": r.get("raw_output")}
+                ),
             }
             for r in responses
         ],
     }
 
 
-def run_evaluation(model_name: str, n_runs: int, logprobs: bool, max_tokens: int) -> dict:
+def load_model(model_name: str) -> Talkie:
     print(f"Loading model: {model_name}")
+    return Talkie(model_name)
+
+
+def run_evaluation(
+    model_name: str,
+    n_runs: int,
+    logprobs: bool,
+    max_tokens: int,
+    model: Talkie | None = None,
+    calibrate: bool = False,
+) -> dict:
+    """
+    Run the full evaluation.
+
+    Pass an already-loaded `model` (e.g. from a notebook) to skip reloading
+    weights; otherwise the model named by `model_name` is loaded here.
+    """
     print(f"Mode: {'log-prob scoring' if logprobs else 'generation'}")
-    model = Talkie(model_name)
+    if model is None:
+        model = load_model(model_name)
+
+    baseline = None
+    if logprobs and calibrate:
+        # Depends only on the model and template, so compute it once.
+        print("Computing contextual-calibration baseline...")
+        baseline = calibration_baseline(model)
+        for option, value in zip(OPTIONS, baseline):
+            print(f"  prior {option:<18} {value:+.4f}")
 
     runs = []
     for i in range(1, n_runs + 1):
         print(f"\nRun {i}/{n_runs}")
-        runs.append(run_single(model, i, n_runs, logprobs, max_tokens))
+        runs.append(run_single(model, i, logprobs, max_tokens, baseline))
         coords = runs[-1]["coordinates"]
         print(f"  -> econ={coords['economic']:+.3f}, social={coords['social']:+.3f}")
 
     coords = average_coordinates(runs) if n_runs > 1 else runs[0]["coordinates"]
+    spec = MODELS.get(model_name)
     return {
-        "model": f"talkie-lm/{model_name}",
+        "model": spec.repo_id if spec else model_name,
+        "label": model_name,
+        "style": spec.style if spec else None,
         "mode": "logprobs" if logprobs else "generation",
+        "calibrated": bool(logprobs and calibrate),
         "n_runs": n_runs,
         "coordinates": coords,
         "runs": runs,
@@ -154,37 +220,109 @@ def run_evaluation(model_name: str, n_runs: int, logprobs: bool, max_tokens: int
 def print_summary(result: dict) -> None:
     coords = result["coordinates"]
     eq, sq = coords["economic"], coords["social"]
+    econ_label = "Centre" if eq == 0 else ("Left" if eq < 0 else "Right")
+    social_label = (
+        "Centre" if sq == 0 else ("Libertarian" if sq < 0 else "Authoritarian")
+    )
     quadrant = (
-        "Left-Libertarian"    if eq < 0 and sq < 0 else
-        "Left-Authoritarian"  if eq < 0 and sq >= 0 else
-        "Right-Libertarian"   if eq >= 0 and sq < 0 else
-        "Right-Authoritarian"
+        "Centre" if eq == 0 and sq == 0 else f"{econ_label}-{social_label}"
     )
     print("\n" + "=" * 60)
     print(f"Model:    {result['model']}")
-    print(f"Mode:     {result['mode']}")
+    if result.get("style"):
+        print(f"Style:    {result['style']}")
+    mode = result["mode"]
+    if result.get("calibrated"):
+        mode += " (contextually calibrated)"
+    print(f"Mode:     {mode}")
     print(f"Runs:     {result['n_runs']}")
     print(f"\nPolitical Compass Coordinates:")
-    print(f"  Economic axis:  {eq:+.3f}  (negative=left, positive=right)")
-    print(f"  Social axis:    {sq:+.3f}  (negative=libertarian, positive=authoritarian)")
+    print(f"  Economic axis:  {eq:+.3f}  (negative=left, positive=right)"
+          if eq else f"  Economic axis:   {eq:.3f}  (negative=left, positive=right)")
+    print(f"  Social axis:    {sq:+.3f}  (negative=libertarian, positive=authoritarian)"
+          if sq else f"  Social axis:     {sq:.3f}  (negative=libertarian, positive=authoritarian)")
     if "economic_std" in coords:
         print(f"  Std (econ):     ±{coords['economic_std']:.3f}")
         print(f"  Std (social):   ±{coords['social_std']:.3f}")
     print(f"  Quadrant:       {quadrant}")
+
+    econ_total = sum(1 for q in QUESTIONS if q["axis"] == "econ")
+    social_total = sum(1 for q in QUESTIONS if q["axis"] == "social")
+    econ_ans = coords.get("econ_answered", econ_total)
+    social_ans = coords.get("social_answered", social_total)
+    print(f"\n  Answered:       {econ_ans:.1f}/{econ_total} econ, "
+          f"{social_ans:.1f}/{social_total} social")
+    if econ_ans < econ_total or social_ans < social_total:
+        print("  NOTE: some answers were unparseable; scores use answered questions only.")
     print("=" * 60)
+
+
+def output_path_for(output: str, model_name: str, n_models: int) -> Path:
+    """
+    Per-model output path.
+
+    A single model writes to `output` unchanged; several models each get the
+    model name spliced in before the suffix so they do not overwrite one
+    another.
+    """
+    path = Path(output)
+    if n_models == 1:
+        return path
+    return path.with_name(f"{path.stem}.{model_name}{path.suffix}")
+
+
+def print_comparison(results: list[dict]) -> None:
+    """Side-by-side coordinates for every model evaluated."""
+    print("\n" + "=" * 72)
+    print("Model comparison")
+    print("=" * 72)
+    width = max(len(r["label"]) for r in results)
+    print(f"  {'model':<{width}}  {'style':<5}  {'econ':>8}  {'social':>8}   quadrant")
+    for r in results:
+        c = r["coordinates"]
+        eq, sq = c["economic"], c["social"]
+        econ_label = "Centre" if eq == 0 else ("Left" if eq < 0 else "Right")
+        social_label = (
+            "Centre" if sq == 0 else ("Libertarian" if sq < 0 else "Authoritarian")
+        )
+        quadrant = "Centre" if eq == 0 and sq == 0 else f"{econ_label}-{social_label}"
+        print(
+            f"  {r['label']:<{width}}  {str(r.get('style') or '-'):<5}  "
+            f"{eq:+8.3f}  {sq:+8.3f}   {quadrant}"
+        )
+    print("=" * 72)
 
 
 def main():
     parser = argparse.ArgumentParser(description="Political Compass Test for Talkie models")
     parser.add_argument(
         "--model",
-        default="talkie-1930-13b-it",
-        help="Talkie model name (default: talkie-1930-13b-it)",
+        nargs="+",
+        default=["talkie-1930-13b-it"],
+        metavar="NAME",
+        help=(
+            "One or more Talkie model names, evaluated in turn "
+            f"(default: talkie-1930-13b-it; available: {', '.join(sorted(MODELS))})"
+        ),
+    )
+    parser.add_argument(
+        "--all-models",
+        action="store_true",
+        help="Evaluate every model in the Talkie registry",
     )
     parser.add_argument(
         "--logprobs",
         action="store_true",
         help="Score options by log-probability instead of generation",
+    )
+    parser.add_argument(
+        "--calibrate",
+        action="store_true",
+        help=(
+            "Apply contextual calibration in logprobs mode: subtract each "
+            "option's log-prob under content-free statements, removing the "
+            "model's a priori preference for a given phrasing"
+        ),
     )
     parser.add_argument(
         "--runs",
@@ -201,17 +339,49 @@ def main():
     parser.add_argument(
         "--output",
         default=None,
-        help="Path to write JSON results (optional)",
+        help=(
+            "Path to write JSON results. With several models this is used as a "
+            "stem, e.g. results.json -> results.talkie-1930-13b-it.json"
+        ),
     )
     args = parser.parse_args()
 
-    result = run_evaluation(args.model, args.runs, args.logprobs, args.max_tokens)
-    print_summary(result)
+    model_names = sorted(MODELS) if args.all_models else args.model
 
-    if args.output:
-        out_path = Path(args.output)
-        out_path.write_text(json.dumps(result, indent=2))
-        print(f"\nResults written to {out_path}")
+    if args.calibrate and not args.logprobs:
+        parser.error("--calibrate applies to log-prob scoring; add --logprobs")
+
+    n_runs = args.runs
+    if args.logprobs and n_runs != 1:
+        # Log-prob scoring reads raw logits with no sampling, so every run
+        # would be identical. Collapse to one rather than burn the GPU time.
+        print(f"[logprobs] deterministic scoring — using 1 run instead of {n_runs}")
+        n_runs = 1
+
+    unknown = [m for m in model_names if m not in MODELS]
+    if unknown:
+        parser.error(
+            f"unknown model(s): {', '.join(unknown)}. "
+            f"Available: {', '.join(sorted(MODELS))}"
+        )
+
+    results = []
+    for name in model_names:
+        # Each model is loaded, scored, then released before the next one, so
+        # peak memory stays at a single 13B checkpoint rather than all of them.
+        result = run_evaluation(
+            name, n_runs, args.logprobs, args.max_tokens, calibrate=args.calibrate
+        )
+        print_summary(result)
+        results.append(result)
+
+        if args.output:
+            out_path = output_path_for(args.output, name, len(model_names))
+            out_path.write_text(json.dumps(result, indent=2))
+            print(f"\nResults written to {out_path}")
+
+    if len(results) > 1:
+        print_comparison(results)
 
 
 if __name__ == "__main__":

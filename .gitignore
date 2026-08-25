@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+.claude
+
+# Evaluation outputs
+results/
+results*.json
+compass*.png
+position_bias.png
