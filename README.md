@@ -12,6 +12,8 @@ Three checkpoints are evaluated, which isolates two separate effects:
 
 Comparing the two **base** models isolates the pretraining distribution's effect on measured ideology; comparing `1930-base` with `1930-it` isolates instruction tuning's effect.
 
+Downloads use plain HTTP rather than HuggingFace's Xet backend (`HF_HUB_DISABLE_XET=1`, set automatically). Xet is unreliable for files this large and reports failures as `Internal Writer Error: Background writer channel closed`, which [masks the real OS error](https://github.com/huggingface/xet-core/issues/763) — usually `No space left on device`.
+
 Each checkpoint is 13.3B parameters — about 27 GB in bfloat16, so an A100 (40 GB) is the smallest GPU that fits one; a T4 or L4 will OOM on load. Models are evaluated one at a time, and `--free-cache` (CLI) or `FREE_CACHE` (notebook) deletes each checkpoint from disk once it is done, since three of them exceed a typical Colab disk.
 
 ## Google Colab (recommended)

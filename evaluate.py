@@ -9,9 +9,17 @@ Usage:
 
 import argparse
 import json
+import os
 import random
 import re
+import shutil
 from pathlib import Path
+
+# Must precede any huggingface_hub import: the flag is read once, at import
+# time. Xet downloads are unreliable for the ~27 GB Talkie checkpoints and
+# report failures as "Internal Writer Error: Background writer channel closed",
+# masking the real OS error. https://github.com/huggingface/xet-core/issues/763
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 
 from talkie import Talkie
 from talkie.config import MODELS
@@ -180,9 +188,47 @@ def run_single(
     }
 
 
+# A Talkie checkpoint is ~27 GB in bfloat16. Downloads need room for the blob
+# plus a same-sized ".incomplete" temp file, so require headroom for both.
+CHECKPOINT_GB = 27.0
+
+
+def check_disk_space(required_gb: float = CHECKPOINT_GB * 2) -> float:
+    """
+    Return free disk space in GB, warning if it is too low for a download.
+
+    Xet-backed downloads report ENOSPC as "Internal Writer Error: Background
+    writer channel closed", which hides the real cause, so check up front.
+    See https://github.com/huggingface/xet-core/issues/763
+    """
+    free_gb = shutil.disk_usage("/").free / 1e9
+    if free_gb < required_gb:
+        print(
+            f"WARNING: {free_gb:.0f} GB free, but a download may need up to "
+            f"{required_gb:.0f} GB (checkpoint + temp file).\n"
+            f"         Free space with --free-cache, or set HF_HUB_DISABLE_XET=1 "
+            f"to get a clearer error."
+        )
+    return free_gb
+
+
 def load_model(model_name: str) -> Talkie:
-    print(f"Loading model: {model_name}")
-    return Talkie(model_name)
+    free_gb = check_disk_space()
+    print(f"Loading model: {model_name}  (disk free: {free_gb:.0f} GB)")
+    try:
+        return Talkie(model_name)
+    except RuntimeError as exc:
+        # Xet masks OS errors; re-raise with the likely cause attached.
+        if "writer channel closed" in str(exc) or "reconstruction error" in str(exc).lower():
+            free_now = shutil.disk_usage("/").free / 1e9
+            raise RuntimeError(
+                f"Download of {model_name} failed ({exc}).\n"
+                f"Disk free: {free_now:.0f} GB. This message is a generic Xet "
+                f"wrapper that commonly hides 'No space left on device'.\n"
+                f"Try: free other checkpoints first (--free-cache / FREE_CACHE), "
+                f"or set HF_HUB_DISABLE_XET=1 to surface the real error."
+            ) from exc
+        raise
 
 
 def run_evaluation(
