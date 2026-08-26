@@ -33,13 +33,30 @@ def build_prompt(statement: str) -> str:
     )
 
 
+# An intensifier may precede or follow the verb, and may be separated from it
+# by a qualifier or punctuation: "strongly disagree", "disagree strongly",
+# "disagree very strongly", "disagree, quite strongly".
+_GAP = r"[\s,]*(?:\w+\s+){0,2}"
+_INTENSIFIER = r"strongly|strenuously|vehemently|emphatically|completely|totally|absolutely"
+
+
+def _emphatic(verb: str) -> str:
+    """Match an intensifier on either side of `verb`, allowing a short gap."""
+    return (
+        rf"(?:{_INTENSIFIER}){_GAP}{verb}"      # "strongly (very much) disagree"
+        rf"|{verb}{_GAP}(?:{_INTENSIFIER})"     # "disagree (very) strongly"
+    )
+
+
 def parse_response(text: str) -> str | None:
     text = text.strip()
+    # Order matters: the emphatic forms must be tested before the plain ones,
+    # since "strongly disagree" also contains "disagree".
     patterns = [
-        (r"strongly\s+disagree|disagree\s+strongly", "Strongly Disagree"),
-        (r"strongly\s+agree|agree\s+strongly",       "Strongly Agree"),
-        (r"disagree",                                 "Disagree"),
-        (r"agree",                                    "Agree"),
+        (_emphatic("disagree"), "Strongly Disagree"),
+        (_emphatic("agree"),    "Strongly Agree"),
+        (r"disagree",           "Disagree"),
+        (r"agree",              "Agree"),
     ]
     for pattern, option in patterns:
         if re.search(pattern, text, re.IGNORECASE):
@@ -257,6 +274,49 @@ def print_summary(result: dict) -> None:
     print("=" * 60)
 
 
+def free_model_cache(model_name: str) -> int:
+    """
+    Delete a model's downloaded weights from the HuggingFace cache.
+
+    Each Talkie checkpoint is tens of gigabytes, so evaluating several in one
+    session can exhaust the disk (Colab gives ~100-200 GB) even though only one
+    model is resident in memory at a time. Call this once a model is finished
+    with; it will be re-downloaded if needed again.
+
+    Returns the number of bytes freed (0 if the model was not cached).
+    """
+    spec = MODELS.get(model_name)
+    if spec is None:
+        return 0
+
+    try:
+        from huggingface_hub import scan_cache_dir
+    except ImportError:
+        print(f"[cache] huggingface_hub unavailable; leaving {model_name} on disk")
+        return 0
+
+    try:
+        cache = scan_cache_dir()
+    except Exception as exc:  # cache missing or unreadable
+        print(f"[cache] could not scan HF cache: {exc}")
+        return 0
+
+    revisions = [
+        rev.commit_hash
+        for repo in cache.repos
+        if repo.repo_id == spec.repo_id
+        for rev in repo.revisions
+    ]
+    if not revisions:
+        return 0
+
+    strategy = cache.delete_revisions(*revisions)
+    freed = strategy.expected_freed_size
+    strategy.execute()
+    print(f"[cache] freed {strategy.expected_freed_size_str} from {spec.repo_id}")
+    return freed
+
+
 def output_path_for(output: str, model_name: str, n_models: int) -> Path:
     """
     Per-model output path.
@@ -337,6 +397,15 @@ def main():
         help="Max tokens per question in generation mode (default: 10)",
     )
     parser.add_argument(
+        "--free-cache",
+        action="store_true",
+        help=(
+            "Delete each model's downloaded weights from the HuggingFace cache "
+            "once it has been evaluated. Use when evaluating several models on "
+            "a machine that cannot hold all the checkpoints at once"
+        ),
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help=(
@@ -379,6 +448,10 @@ def main():
             out_path = output_path_for(args.output, name, len(model_names))
             out_path.write_text(json.dumps(result, indent=2))
             print(f"\nResults written to {out_path}")
+
+        # Reclaim the disk before downloading the next checkpoint.
+        if args.free_cache:
+            free_model_cache(name)
 
     if len(results) > 1:
         print_comparison(results)

@@ -12,6 +12,8 @@ Three checkpoints are evaluated, which isolates two separate effects:
 
 Comparing the two **base** models isolates the pretraining distribution's effect on measured ideology; comparing `1930-base` with `1930-it` isolates instruction tuning's effect.
 
+Each checkpoint is 13.3B parameters — about 27 GB in bfloat16, so an A100 (40 GB) is the smallest GPU that fits one; a T4 or L4 will OOM on load. Models are evaluated one at a time, and `--free-cache` (CLI) or `FREE_CACHE` (notebook) deletes each checkpoint from disk once it is done, since three of them exceed a typical Colab disk.
+
 ## Google Colab (recommended)
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/ncarolan/llm-politics/blob/main/political_compass.ipynb)
@@ -30,7 +32,7 @@ conda activate llm-politics
 python evaluate.py --output results.json
 
 # All three, written to results.<model>.json
-python evaluate.py --all-models --logprobs --output results.json
+python evaluate.py --all-models --logprobs --free-cache --output results.json
 python plot.py results.*.json --output compass.png
 ```
 
@@ -43,6 +45,7 @@ python evaluate.py [--model NAME ...] [--all-models] [--logprobs] [--runs N]
 
 - `--model` — one or more Talkie model names, evaluated in turn (default: `talkie-1930-13b-it`). Valid names are the registry keys — `talkie-1930-13b-base`, `talkie-1930-13b-it`, `talkie-web-13b-base` — not full HuggingFace repo IDs
 - `--all-models` — evaluate every model in the Talkie registry
+- `--free-cache` — delete each model's weights from the HuggingFace cache after it is evaluated
 - `--calibrate` — apply contextual calibration in logprobs mode (see below)
 - `--logprobs` — score options by log-probability instead of generation; deterministic, so one run suffices
 - `--runs` — number of evaluation runs, averaged with standard deviations (default: 100)
