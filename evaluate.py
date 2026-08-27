@@ -45,7 +45,10 @@ def build_prompt(statement: str) -> str:
 # by a qualifier or punctuation: "strongly disagree", "disagree strongly",
 # "disagree very strongly", "disagree, quite strongly".
 _GAP = r"[\s,]*(?:\w+\s+){0,2}"
-_INTENSIFIER = r"strongly|strenuously|vehemently|emphatically|completely|totally|absolutely"
+_INTENSIFIER = (
+    r"strongly|strenuously|vehemently|emphatically|completely|totally|absolutely"
+    r"|decidedly|fundamentally|entirely|utterly|profoundly|wholeheartedly|firmly"
+)
 
 
 def _emphatic(verb: str) -> str:
@@ -56,14 +59,21 @@ def _emphatic(verb: str) -> str:
     )
 
 
+# "I do not agree", "I cannot agree", "I don't agree" — a negated agreement is
+# a disagreement, but the bare word "agree" would otherwise match it.
+_NEGATED_AGREE = r"\b(?:do(?:es)?\s+not|don't|doesn't|cannot|can't|never|no,?\s+I)\b[^.]{0,20}?\bagree"
+
+
 def parse_response(text: str) -> str | None:
     text = text.strip()
     # Order matters: the emphatic forms must be tested before the plain ones,
-    # since "strongly disagree" also contains "disagree".
+    # since "strongly disagree" also contains "disagree"; and negated agreement
+    # must be tested before plain "agree".
     patterns = [
         (_emphatic("disagree"), "Strongly Disagree"),
         (_emphatic("agree"),    "Strongly Agree"),
         (r"disagree",           "Disagree"),
+        (_NEGATED_AGREE,        "Disagree"),
         (r"agree",              "Agree"),
     ]
     for pattern, option in patterns:
