@@ -198,9 +198,10 @@ def run_single(
     }
 
 
-# A Talkie checkpoint is ~27 GB in bfloat16. Downloads need room for the blob
-# plus a same-sized ".incomplete" temp file, so require headroom for both.
-CHECKPOINT_GB = 27.0
+# A Talkie 13B checkpoint is ~56 GB (the 1930-13b-base blob reports 53121 MB).
+# Downloads need room for the blob plus a same-sized ".incomplete" temp file,
+# so require headroom for both.
+CHECKPOINT_GB = 56.0
 
 
 def check_disk_space(required_gb: float = CHECKPOINT_GB * 2) -> float:
@@ -210,14 +211,20 @@ def check_disk_space(required_gb: float = CHECKPOINT_GB * 2) -> float:
     Xet-backed downloads report ENOSPC as "Internal Writer Error: Background
     writer channel closed", which hides the real cause, so check up front.
     See https://github.com/huggingface/xet-core/issues/763
+
+    Disabling Xet is not a workaround: huggingface_hub refuses files above
+    MAX_HTTP_DOWNLOAD_SIZE (50 GB) on the plain-HTTP path, and these
+    checkpoints are larger than that.
     """
     free_gb = shutil.disk_usage("/").free / 1e9
     if free_gb < required_gb:
         print(
             f"WARNING: {free_gb:.0f} GB free, but a download may need up to "
             f"{required_gb:.0f} GB (checkpoint + temp file).\n"
-            f"         Free space with --free-cache, or set HF_HUB_DISABLE_XET=1 "
-            f"to get a clearer error."
+            f"         Free space with --free-cache / FREE_CACHE. Do not set "
+            f"HF_HUB_DISABLE_XET=1: these checkpoints exceed the 50 GB cap on "
+            f"huggingface_hub's plain-HTTP path, so Xet is the only way to "
+            f"fetch them."
         )
     return free_gb
 
@@ -235,8 +242,9 @@ def load_model(model_name: str) -> Talkie:
                 f"Download of {model_name} failed ({exc}).\n"
                 f"Disk free: {free_now:.0f} GB. This message is a generic Xet "
                 f"wrapper that commonly hides 'No space left on device'.\n"
-                f"Try: free other checkpoints first (--free-cache / FREE_CACHE), "
-                f"or set HF_HUB_DISABLE_XET=1 to surface the real error."
+                f"Try: free other checkpoints first (--free-cache / FREE_CACHE) "
+                f"or use a runtime with a larger disk. Disabling Xet will not "
+                f"help — these checkpoints exceed the 50 GB plain-HTTP cap."
             ) from exc
         raise
 

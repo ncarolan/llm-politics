@@ -1,2 +1,3 @@
 git+https://github.com/talkie-lm/talkie.git
 matplotlib
+hf_xet
